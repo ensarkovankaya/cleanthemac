@@ -42,7 +42,7 @@ while (( $# )); do
     --only)           shift; ONLY="${1:-}" ;;
     --only=*)         ONLY="${1#--only=}" ;;
     --help|-h)        sed -n '3,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) print -ru2 -- "${C_RED}Bilinmeyen argüman: $1${C_RST}"; exit 2 ;;
+    *) print -ru2 -- "${C_RED}Unknown argument: $1${C_RST}"; exit 2 ;;
   esac
   shift
 done
@@ -77,8 +77,8 @@ disk_free_kb() { /bin/df -k / | awk 'NR==2{print $4}'; }
 confirm() {
   local prompt="$1" reply=""
   (( ASSUME_YES )) && return 0
-  read "reply?$prompt [e/H]: "
-  [[ "$reply" == (e|E|y|Y|evet|yes) ]]
+  read "reply?$prompt [y/N]: "
+  [[ "$reply" == (y|Y|yes|e|E|evet) ]]
 }
 
 # --------------------------------------------------------------- registry ----
@@ -95,47 +95,47 @@ register() {
 
 H="$HOME"
 
-register docker     tool "Docker (imaj/container/build cache)" caution \
-  "Kullanılmayan imajlar, durmuş container'lar ve build cache."
-register claude_vm  path "Claude local-agent VM bundle'ları"   caution \
-  "Local agent mode VM imajları. Silinirse tekrar indirilir."
+register docker     tool "Docker (images/containers/build cache)" caution \
+  "Unused images, stopped containers, and build cache."
+register claude_vm  path "Claude local-agent VM bundles"          caution \
+  "Local agent mode VM images. Re-downloaded if removed."
 TARGETS[claude_vm]="$H/Library/Application Support/Claude/vm_bundles"
 
-register go_modcache tool "Go module cache"                    safe \
-  "İndirilmiş Go modülleri. Sonraki build'de yeniden iner."
+register go_modcache tool "Go module cache"                       safe \
+  "Downloaded Go modules. Re-fetched on next build."
 TARGETS[go_modcache]="$H/go/pkg/mod"
 
-register npm        tool "npm cache"                           safe \
-  "npm paket cache'i (_cacache). Yeniden indirilir."
+register npm        tool "npm cache"                              safe \
+  "npm package cache (_cacache). Re-downloaded."
 TARGETS[npm]="$H/.npm/_cacache"
 
-register uv         tool "uv cache"                            safe \
-  "Python (uv) paket cache'i. Kullanılmayan girdiler budanır."
+register uv         tool "uv cache"                               safe \
+  "Python (uv) package cache. Unused entries are pruned."
 TARGETS[uv]="$H/.cache/uv"
 
-register pnpm       tool "pnpm store"                          safe \
-  "pnpm global içerik deposu. Referanssız paketler budanır."
+register pnpm       tool "pnpm store"                             safe \
+  "pnpm global content store. Unreferenced packages are pruned."
 
-register playwright path "Playwright tarayıcı binary'leri"     safe \
-  "İndirilmiş tarayıcılar. Sonraki kullanımda tekrar iner."
+register playwright path "Playwright browser binaries"            safe \
+  "Downloaded browsers. Re-downloaded on next use."
 TARGETS[playwright]="$H/Library/Caches/ms-playwright"
 
-register codex      path "codex-runtimes cache"                safe \
-  "Codex runtime indirme cache'i."
+register codex      path "codex-runtimes cache"                   safe \
+  "Codex runtime download cache."
 TARGETS[codex]="$H/.cache/codex-runtimes"
 
-register copilot    path "github-copilot cache"                safe \
-  "GitHub Copilot cache'i."
+register copilot    path "github-copilot cache"                   safe \
+  "GitHub Copilot cache."
 TARGETS[copilot]="$H/.cache/github-copilot"
 
-register brew       tool "Homebrew indirme cache"              safe \
-  "İndirilmiş formula/bottle arşivleri."
+register brew       tool "Homebrew download cache"                safe \
+  "Downloaded formula/bottle archives."
 
-register pip        tool "pip cache"                           safe \
-  "Python pip wheel/indirme cache'i."
+register pip        tool "pip cache"                              safe \
+  "Python pip wheel/download cache."
 
-register misc       path "Diğer araç cache'leri"               safe \
-  "golangci-lint, outlines, node, nvim cache'leri."
+register misc       path "Other tool caches"                     safe \
+  "golangci-lint, outlines, node, nvim caches."
 TARGETS[misc]="$H/.cache/golangci-lint
 $H/.cache/outlines
 $H/.cache/node
@@ -148,7 +148,7 @@ if [[ -n "$ONLY" ]]; then
     [[ " ${keep[*]} " == *" $k "* ]] && filtered+=("$k")
   done
   ORDER=("${filtered[@]}")
-  (( ${#ORDER} )) || { print -ru2 -- "${C_RED}--only ile eşleşen kategori yok.${C_RST}"; exit 2; }
+  (( ${#ORDER} )) || { print -ru2 -- "${C_RED}No categories matched --only.${C_RST}"; exit 2; }
 fi
 
 # --------------------------------------------------------------- ANALYSIS ----
@@ -162,14 +162,14 @@ analyze_key() {
         AVAIL[$k]=1
         SIZE_KB[$k]=$(path_kb "$H/Library/Containers/com.docker.docker/Data/vms")
         rec=$(docker system df --format '{{.Type}}: {{.Reclaimable}}' 2>/dev/null | paste -sd'; ' -)
-        NOTE[$k]="geri kazanılabilir → ${rec}"
+        NOTE[$k]="reclaimable → ${rec}"
       else
-        NOTE[$k]="docker daemon kapalı/erişilemez — atlanır"
+        NOTE[$k]="docker daemon not running/reachable — skipped"
       fi
       ;;
     go_modcache)
       [[ -d "${TARGETS[$k]}" ]] && { AVAIL[$k]=1; SIZE_KB[$k]=$(path_kb "${TARGETS[$k]}"); }
-      have go || NOTE[$k]="(go yok; chmod+rm ile silinir)"
+      have go || NOTE[$k]="(go not installed; removed via chmod+rm)"
       ;;
     npm)
       [[ -d "${TARGETS[$k]}" ]] && { AVAIL[$k]=1; SIZE_KB[$k]=$(path_kb "${TARGETS[$k]}"); }
@@ -177,7 +177,7 @@ analyze_key() {
     uv)
       if have uv && [[ -d "${TARGETS[$k]}" ]]; then
         AVAIL[$k]=1; SIZE_KB[$k]=$(path_kb "${TARGETS[$k]}")
-        NOTE[$k]="prune sadece kullanılmayanı siler (hepsini değil)"
+        NOTE[$k]="prune only removes unused entries (not all)"
       fi
       ;;
     pnpm)
@@ -185,7 +185,7 @@ analyze_key() {
         sp=$(pnpm store path 2>/dev/null)
         if [[ -n "$sp" && -d "$sp" ]]; then
           AVAIL[$k]=1; SIZE_KB[$k]=$(path_kb "$sp"); TARGETS[$k]="$sp"
-          NOTE[$k]="prune sadece referanssızı siler"
+          NOTE[$k]="prune only removes unreferenced packages"
         fi
       fi
       ;;
@@ -207,23 +207,24 @@ analyze_key() {
   esac
 }
 
-print -- "${C_B}${C_CYN}== Cache analizi yapılıyor... ==${C_RST}"
+print -- "${C_B}${C_CYN}== Analyzing caches... ==${C_RST}"
 for k in $ORDER; do analyze_key "$k"; done
 
 # ----------------------------------------------------------------- REPORT ----
 render_row() {
   local idx=$1 k=$2 tag="" color=""
-  if [[ "${SAFETY[$k]}" == safe ]]; then tag="güvenli"; color="$C_GRN"
-  else tag="dikkat"; color="$C_YEL"; fi
+  if [[ "${SAFETY[$k]}" == safe ]]; then tag="safe"; color="$C_GRN"
+  else tag="caution"; color="$C_YEL"; fi
   printf "%-3s %-42s %8s  ${color}%s${C_RST}\n" "$idx." "${LABEL[$k]}" "$(human ${SIZE_KB[$k]})" "$tag"
   print -- "    ${C_DIM}${DESC[$k]}${C_RST}"
   [[ -n "${NOTE[$k]}" ]] && print -- "    ${C_DIM}↳ ${NOTE[$k]}${C_RST}"
 }
 
 print -- ""
-print -- "${C_B}╔══════════════════════════════════════════════════════════════╗${C_RST}"
-print -- "${C_B}║  CACHE TEMIZLIK RAPORU                                        ║${C_RST}"
-print -- "${C_B}╚══════════════════════════════════════════════════════════════╝${C_RST}"
+box_bar=$(printf '═%.0s' {1..62})   # 62 box-drawing chars, width-matched to the content row
+print -- "${C_B}╔${box_bar}╗${C_RST}"
+printf  "${C_B}║%-62s║${C_RST}\n" "  CACHE CLEANUP REPORT"
+print -- "${C_B}╚${box_bar}╝${C_RST}"
 
 # sort by size, descending (available categories only)
 typeset -a rows=()
@@ -236,9 +237,9 @@ done
 typeset -a sorted=("${(@On)rows}")   # numeric, descending
 
 if (( ${#sorted} == 0 )); then
-  print -- "${C_YEL}Temizlenecek uygun cache bulunamadı.${C_RST}"
+  print -- "${C_YEL}No cleanable caches found.${C_RST}"
 else
-  printf "${C_DIM}%-3s %-42s %8s  %s${C_RST}\n" "#" "Kategori" "Boyut" "Güvenlik"
+  printf "${C_DIM}%-3s %-42s %8s  %s${C_RST}\n" "#" "Category" "Size" "Safety"
   print -- "${C_DIM}─────────────────────────────────────────────────────────────────${C_RST}"
   i=0
   for row in $sorted; do
@@ -246,7 +247,7 @@ else
     render_row "$i" "${row#*|}"
   done
   print -- "${C_DIM}─────────────────────────────────────────────────────────────────${C_RST}"
-  printf "${C_B}%-46s %8s${C_RST}\n" "TOPLAM (üst sınır)" "$(human $total_kb)"
+  printf "${C_B}%-46s %8s${C_RST}\n" "TOTAL (upper bound)" "$(human $total_kb)"
 fi
 
 # briefly list skipped categories
@@ -255,29 +256,29 @@ for k in $ORDER; do
   (( AVAIL[$k] )) && continue
   [[ -n "${NOTE[$k]}" ]] && skipped+=("${LABEL[$k]} — ${NOTE[$k]}")
 done
-(( ${#skipped} )) && { print -- ""; print -- "${C_DIM}Atlanan: ${(j:; :)skipped}${C_RST}"; }
+(( ${#skipped} )) && { print -- ""; print -- "${C_DIM}Skipped: ${(j:; :)skipped}${C_RST}"; }
 
 if (( DRY_RUN )); then
   print -- ""
-  print -- "${C_CYN}--dry-run: hiçbir şey silinmedi.${C_RST}"
+  print -- "${C_CYN}--dry-run: nothing was deleted.${C_RST}"
   exit 0
 fi
 (( ${#sorted} )) || exit 0
 
 # --------------------------------------------------------------- APPROVAL ----
 print -- ""
-print -- "${C_B}== Onay aşaması ==${C_RST} ${C_DIM}(varsayılan Hayır; sadece 'e' silme onayıdır)${C_RST}"
+print -- "${C_B}== Approval ==${C_RST} ${C_DIM}(default No; only 'y' confirms deletion)${C_RST}"
 
 typeset -a approved=()
 for row in $sorted; do
   k="${row#*|}"
-  prompt="${C_B}${LABEL[$k]}${C_RST} (${C_CYN}$(human ${SIZE_KB[$k]})${C_RST}) silinsin mi?"
-  [[ "${SAFETY[$k]}" == caution ]] && prompt="${C_YEL}[dikkat]${C_RST} $prompt"
+  prompt="${C_B}${LABEL[$k]}${C_RST} (${C_CYN}$(human ${SIZE_KB[$k]})${C_RST}) — delete?"
+  [[ "${SAFETY[$k]}" == caution ]] && prompt="${C_YEL}[caution]${C_RST} $prompt"
   confirm "$prompt" && approved+=("$k")
 done
 
 if (( ${#approved} == 0 )); then
-  print -- ""; print -- "${C_YEL}Hiçbir kategori onaylanmadı. Çıkılıyor.${C_RST}"; exit 0
+  print -- ""; print -- "${C_YEL}No categories approved. Exiting.${C_RST}"; exit 0
 fi
 
 # ---------------------------------------------------------------- CLEANUP ----
@@ -288,11 +289,11 @@ clean_one() {
     docker)
       if (( ! ASSUME_YES )); then
         print -- ""
-        print -- "  Docker seviyesi seç:"
-        print -- "    ${C_DIM}1) dangling (asılı imaj + durmuş container)${C_RST}"
-        print -- "    ${C_DIM}2) tüm kullanılmayan imajlar (volume korunur) [önerilen]${C_RST}"
-        print -- "    ${C_DIM}3) + named volume'ler (RISKLI: DB verisi gidebilir)${C_RST}"
-        read "lr?  Seçim [1/2/3, varsayılan 2]: "
+        print -- "  Select Docker level:"
+        print -- "    ${C_DIM}1) dangling (dangling images + stopped containers)${C_RST}"
+        print -- "    ${C_DIM}2) all unused images (volumes preserved) [recommended]${C_RST}"
+        print -- "    ${C_DIM}3) + named volumes (RISKY: may delete DB data)${C_RST}"
+        read "lr?  Choice [1/2/3, default 2]: "
         case "$lr" in 1) lvl=1;; 3) lvl=3;; *) lvl=2;; esac
       else
         (( DOCKER_VOLUMES )) && lvl=3 || lvl=2
@@ -302,7 +303,7 @@ clean_one() {
         2) docker system prune -af ;;
         3) docker system prune -af --volumes ;;
       esac
-      print -- "  ${C_GRN}✓ docker prune (seviye $lvl)${C_RST}"
+      print -- "  ${C_GRN}✓ docker prune (level $lvl)${C_RST}"
       ;;
     go_modcache)
       if have go; then go clean -modcache
@@ -319,7 +320,7 @@ clean_one() {
       print -- "${C_GRN}✓${C_RST}"
       ;;
     pnpm)
-      pnpm store prune >/dev/null 2>&1 && print -- "${C_GRN}✓${C_RST}" || print -- "${C_YEL}atlandı${C_RST}"
+      pnpm store prune >/dev/null 2>&1 && print -- "${C_GRN}✓${C_RST}" || print -- "${C_YEL}skipped${C_RST}"
       ;;
     brew)
       brew cleanup -s >/dev/null 2>&1
@@ -338,7 +339,7 @@ clean_one() {
 }
 
 print -- ""
-print -- "${C_B}== Temizlik ==${C_RST}"
+print -- "${C_B}== Cleanup ==${C_RST}"
 free_before=$(disk_free_kb)
 for k in $approved; do
   print -n -- "→ ${LABEL[$k]} ... "
@@ -351,18 +352,18 @@ freed=$(( free_after - free_before ))
 (( freed < 0 )) && freed=0
 
 print -- ""
-print -- "${C_B}${C_GRN}== Tamamlandı ==${C_RST}"
-printf "Onaylanan kategori : %d\n" "${#approved}"
-printf "Boş alan (önce)    : %s\n" "$(human $free_before)"
-printf "Boş alan (sonra)   : %s\n" "$(human $free_after)"
-printf "${C_B}Açılan alan        : ~%s${C_RST}\n" "$(human $freed)"
+print -- "${C_B}${C_GRN}== Done ==${C_RST}"
+printf "Approved categories : %d\n" "${#approved}"
+printf "Free space (before) : %s\n" "$(human $free_before)"
+printf "Free space (after)  : %s\n" "$(human $free_after)"
+printf "${C_B}Reclaimed           : ~%s${C_RST}\n" "$(human $freed)"
 
 report_dir="${0:A:h}/reports"
 mkdir -p "$report_dir" 2>/dev/null
 ts=$(date +%Y%m%d-%H%M%S)
 {
-  print -- "clean.sh raporu — $ts"
-  print -- "Onaylanan: ${(j:, :)approved}"
-  print -- "Açılan alan: ~$(human $freed)"
+  print -- "clean.sh report — $ts"
+  print -- "Approved: ${(j:, :)approved}"
+  print -- "Reclaimed: ~$(human $freed)"
 } >> "$report_dir/clean-$ts.log" 2>/dev/null
-print -- "${C_DIM}Rapor: $report_dir/clean-$ts.log${C_RST}"
+print -- "${C_DIM}Report: $report_dir/clean-$ts.log${C_RST}"
