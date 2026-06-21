@@ -1,0 +1,5 @@
+# Runtime cleanup logs
+reports/
+
+# macOS
+.DS_Store
